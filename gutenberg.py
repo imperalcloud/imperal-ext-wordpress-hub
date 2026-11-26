@@ -51,6 +51,30 @@ def _is_external_link(url: str, site_domain: str | None) -> bool:
     return _registrable_domain(url) != _registrable_domain(site_domain)
 
 
+# Inline emphasis an article's Markdown carries (Article Writer's export uses all three). Each pattern runs on
+# text that is ALREADY html-escaped, so the only tags that can appear are the ones written here.
+_CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
+_STRONG_RE = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*")
+_EM_RE = re.compile(r"(?<![\*\w])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?![\*\w])")
+
+
+def _render_inline_marks(escaped: str) -> str:
+    """``**bold**`` -> <strong>, ``*italic*`` -> <em>, `` `code` `` -> <code>, on text that is already
+    html-escaped. Before this, the markers went to the page as they were: a published article showed literal
+    ``**Primary Strength:**`` (live 2026-11-26, post 2248: 40 raw ``**`` and not one <strong>). What stands inside
+    a code span is left exactly as written."""
+    def marks(part: str) -> str:
+        part = _STRONG_RE.sub(r"<strong>\1</strong>", part)
+        return _EM_RE.sub(r"<em>\1</em>", part)
+    out, last = [], 0
+    for match in _CODE_SPAN_RE.finditer(escaped):
+        out.append(marks(escaped[last:match.start()]))
+        out.append(f"<code>{match.group(1)}</code>")
+        last = match.end()
+    out.append(marks(escaped[last:]))
+    return "".join(out)
+
+
 def _render_inline_links(text: str, site_domain: str | None = None) -> str:
     """Escape ``text`` for safe HTML output, EXCEPT for [anchor](https://url)
     spans, which become real <a href> tags with the anchor text and URL each
@@ -65,23 +89,26 @@ def _render_inline_links(text: str, site_domain: str | None = None) -> str:
     to a destination this pipeline doesn't control or vet per-link. A link
     to the site's own domain is a normal, followed, same-tab link.
     """
-    pieces = []
-    last_end = 0
-    for match in _INLINE_LINK_RE.finditer(text):
-        pieces.append(html.escape(text[last_end:match.start()]))
+    # Each link is set aside behind a placeholder first, so emphasis can be read across the WHOLE text -- a bold
+    # that wraps a link (``**[anchor](url)**``) is one bold, not two stray pairs of asterisks around a link.
+    links: list[str] = []
+
+    def keep(match) -> str:
         anchor_text, url = match.group(1), match.group(2)
         escaped_url = html.escape(url, quote=True)
-        escaped_anchor = html.escape(anchor_text)
+        escaped_anchor = _render_inline_marks(html.escape(anchor_text))
         if _is_external_link(url, site_domain):
-            pieces.append(
+            links.append(
                 f'<a href="{escaped_url}" target="_blank" '
                 f'rel="nofollow noopener noreferrer">{escaped_anchor}</a>'
             )
         else:
-            pieces.append(f'<a href="{escaped_url}">{escaped_anchor}</a>')
-        last_end = match.end()
-    pieces.append(html.escape(text[last_end:]))
-    return "".join(pieces)
+            links.append(f'<a href="{escaped_url}">{escaped_anchor}</a>')
+        return f"\x00{len(links) - 1}\x00"
+
+    held = _INLINE_LINK_RE.sub(keep, text.replace("\x00", ""))
+    rendered = _render_inline_marks(html.escape(held))
+    return re.sub(r"\x00(\d+)\x00", lambda m: links[int(m.group(1))], rendered)
 
 
 def paragraph_block(text: str, site_domain: str | None = None) -> str:
@@ -95,6 +122,36 @@ def heading_block(text: str, level: int = 2, site_domain: str | None = None) -> 
         f'<h{level} class="wp-block-heading">{escaped}</h{level}>'
         f"<!-- /wp:heading -->"
     )
+
+
+def list_block(items, ordered: bool = False, site_domain: str | None = None) -> str:
+    """A real Gutenberg list: one ``wp:list`` holding a ``wp:list-item`` per item. Before this a bullet was its
+    own paragraph, so a published article had no list at all (live 2026-11-26, post 2248: 0 <ul>, 0 <li>)."""
+    rendered = "".join(
+        f"<!-- wp:list-item --><li>{_render_inline_links(str(item), site_domain)}</li><!-- /wp:list-item -->"
+        for item in (items or []) if str(item or "").strip())
+    if not rendered:
+        return ""
+    tag, attrs = ("ol", ' {"ordered":true}') if ordered else ("ul", "")
+    return f'<!-- wp:list{attrs} --><{tag} class="wp-block-list">{rendered}</{tag}><!-- /wp:list -->'
+
+
+def table_block(rows, header: bool = True, site_domain: str | None = None) -> str:
+    """A real Gutenberg table from rows of cell texts; the first row is the head when ``header``. Cell text goes
+    through the same escaping and inline rendering as a paragraph -- no HTML is ever taken from the caller."""
+    rows = [[str(c or "") for c in row] for row in (rows or []) if row]
+    if not rows:
+        return ""
+    width = max(len(r) for r in rows)
+    rows = [r + [""] * (width - len(r)) for r in rows]
+
+    def line(cells, tag: str) -> str:
+        return "<tr>" + "".join(f"<{tag}>{_render_inline_links(c.strip(), site_domain)}</{tag}>" for c in cells) + "</tr>"
+    head = f"<thead>{line(rows[0], 'th')}</thead>" if header and len(rows) > 1 else ""
+    body_rows = rows[1:] if head else rows
+    body = "<tbody>" + "".join(line(r, "td") for r in body_rows) + "</tbody>"
+    return ('<!-- wp:table --><figure class="wp-block-table"><table class="has-fixed-layout">'
+            f"{head}{body}</table></figure><!-- /wp:table -->")
 
 
 def image_block(media_id: int, media_url: str, alt: str = "", caption: str | None = None) -> str:
@@ -185,8 +242,21 @@ def _block_fields(block) -> tuple[str, str, int, int | None, str | None, str | N
             getattr(block, "faq_items", None) or [])
 
 
+def _block_extra(block, name: str, default):
+    """One more field off a dict or pydantic block (the list / table fields ``_block_fields`` does not carry)."""
+    value = block.get(name) if isinstance(block, dict) else getattr(block, name, None)
+    return default if value is None else value
+
+
 _HEADING_LINE_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
-_BULLET_LINE_RE = re.compile(r"^[-*]\s+(.*\S)\s*$")
+_BULLET_LINE_RE = re.compile(r"^[-*+]\s+(.*\S)\s*$")
+_ORDERED_LINE_RE = re.compile(r"^\d{1,3}[.)]\s+(.*\S)\s*$")
+_TABLE_LINE_RE = re.compile(r"^\|(.+)\|\s*$")
+_TABLE_RULE_CELL_RE = re.compile(r"^:?-{1,}:?$")
+
+
+def _table_cells(line: str) -> list[str]:
+    return [c.strip() for c in _TABLE_LINE_RE.match(line).group(1).split("|")]
 
 # POST-CHECK: Article Writer's own authoring template uses bare scaffolding
 # labels ("Intro", "CTA", their translations) as section markers while it is
@@ -257,19 +327,37 @@ def markdown_to_blocks(markdown_text: str, *, skip_h1: bool = True) -> list[dict
     matching the existing WordPress Hub convention that the H1 is the post's
     title field, not part of post_content.
 
-    Bullet list lines ('- item') become their own paragraph blocks with the
-    leading marker stripped -- this repo does not yet have a dedicated
-    Gutenberg list block type, so a bullet renders as its own paragraph,
-    consistent with how list items already render on published posts.
+    Consecutive bullet lines ('- item') become ONE list block {type: "list", items, ordered: False}; consecutive
+    numbered lines ('1. item') one ordered list; consecutive pipe-table lines one table block {type: "table",
+    rows, header} (header is True when the second line is the '|---|' rule, which is then dropped). Inline
+    emphasis ('**bold**', '*italic*', '`code`') stays in the text exactly as written and is rendered by
+    blocks_to_content, the same way an inline link is.
+
+    Until 2026-11 a bullet became its own paragraph (this module had no list block) and a table line a paragraph
+    of pipes: an article written with lists and a comparison table was published as headings and paragraphs only.
     """
     blocks: list[dict] = []
     seen_h1 = False
+    run_kind, run = "", []          # the list or table being gathered: "ul" | "ol" | "table"
+
+    def close_run() -> None:
+        nonlocal run_kind, run
+        if run_kind in ("ul", "ol") and run:
+            blocks.append({"type": "list", "text": "", "items": run, "ordered": run_kind == "ol"})
+        elif run_kind == "table" and run:
+            header = len(run) > 1 and all(_TABLE_RULE_CELL_RE.match(c or "-") for c in run[1])
+            rows = [r for i, r in enumerate(run) if not (header and i == 1)]
+            blocks.append({"type": "table", "text": "", "rows": rows, "header": header})
+        run_kind, run = "", []
+
     for raw_line in (markdown_text or "").splitlines():
         line = raw_line.strip()
         if not line:
+            close_run()
             continue
         heading_match = _HEADING_LINE_RE.match(line)
         if heading_match:
+            close_run()
             level = len(heading_match.group(1))
             text = heading_match.group(2)
             if level == 1 and skip_h1 and not seen_h1:
@@ -277,11 +365,24 @@ def markdown_to_blocks(markdown_text: str, *, skip_h1: bool = True) -> list[dict
                 continue
             blocks.append({"type": "heading", "text": text, "level": level})
             continue
-        bullet_match = _BULLET_LINE_RE.match(line)
-        if bullet_match:
-            blocks.append({"type": "paragraph", "text": bullet_match.group(1)})
-            continue
-        blocks.append({"type": "paragraph", "text": line})
+        for kind, pattern in (("ul", _BULLET_LINE_RE), ("ol", _ORDERED_LINE_RE)):
+            item = pattern.match(line)
+            if item:
+                if run_kind != kind:
+                    close_run()
+                    run_kind = kind
+                run.append(item.group(1))
+                break
+        else:
+            if _TABLE_LINE_RE.match(line):
+                if run_kind != "table":
+                    close_run()
+                    run_kind = "table"
+                run.append(_table_cells(line))
+                continue
+            close_run()
+            blocks.append({"type": "paragraph", "text": line})
+    close_run()
     return blocks
 
 
@@ -322,6 +423,18 @@ def blocks_to_content(blocks, site_domain: str | None = None) -> str:
             rendered_faq = faq_block(faq_items, intro_text=text)
             if rendered_faq:
                 rendered.append(rendered_faq)
+            continue
+        if btype == "list":
+            rendered_list = list_block(_block_extra(block, "items", []), bool(_block_extra(block, "ordered", False)),
+                                       site_domain)
+            if rendered_list:
+                rendered.append(rendered_list)
+            continue
+        if btype == "table":
+            rendered_table = table_block(_block_extra(block, "rows", []), bool(_block_extra(block, "header", True)),
+                                         site_domain)
+            if rendered_table:
+                rendered.append(rendered_table)
             continue
         if not text.strip():
             continue

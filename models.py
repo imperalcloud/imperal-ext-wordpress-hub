@@ -1656,10 +1656,18 @@ class PostBlockInput(BaseModel):
     FAQPage JSON-LD <script> block (schema.org) covering every item in
     faq_items -- this works on any WordPress site regardless of which SEO
     plugin is installed, since it is standard schema.org markup rather than
-    a plugin-proprietary block; anything else renders a paragraph.
+    a plugin-proprietary block; type == "list" renders a Gutenberg list from
+    items (ordered -> numbered); type == "table" renders a Gutenberg table
+    from rows (the first row is the head when header); anything else renders
+    a paragraph. Block text is never HTML: it is escaped, and only inline
+    Markdown (**bold**, *italic*, `code`, [anchor](url)) is rendered.
     """
-    type: str = Field(default="paragraph", description="'paragraph', 'heading', 'image', or 'faq'")
-    text: str = Field(default="", description="Block text (paragraph/heading); alt text for 'image'; optional intro text for 'faq'")
+    type: str = Field(default="paragraph", description="'paragraph', 'heading', 'list', 'table', 'image', or 'faq'")
+    text: str = Field(default="", description="Block text (paragraph/heading); alt text for 'image'; optional intro text for 'faq'. Inline Markdown is rendered: **bold**, *italic*, `code`, [anchor text](https://url); any HTML written here is escaped and shown as text")
+    items: list[str] = Field(default_factory=list, description="List items, used only when type is 'list' -- each one line of text (inline Markdown rendered as in text)")
+    ordered: bool = Field(default=False, description="Numbered list instead of bullets, used only when type is 'list'")
+    rows: list[list[str]] = Field(default_factory=list, description="Table rows of cell texts, used only when type is 'table'")
+    header: bool = Field(default=True, description="The first row of rows is the table's head, used only when type is 'table'")
     level: int = Field(default=2, ge=1, le=6, description="Heading level, used only when type is 'heading'")
     media_id: int | None = Field(default=None, description="Attachment id from upload_media, used only when type is 'image'")
     media_url: str | None = Field(default=None, description="Attachment URL from upload_media, used only when type is 'image'")
@@ -1707,8 +1715,9 @@ class CreatePostParams(BaseModel):
         default=None,
         description="ALTERNATIVE to blocks: the full article as Markdown (e.g. straight from Article "
                     "Writer's read_full_article/export_article_text -- '# Title', '## Heading', "
-                    "blank-line-separated paragraphs, '- ' bullets, inline [anchor text](https://url) "
-                    "links). Converted into the same {type, text, level} blocks automatically -- this is "
+                    "blank-line-separated paragraphs, '- ' bullets and '1. ' numbered lists, pipe tables, "
+                    "**bold** / *italic* / `code`, inline [anchor text](https://url) links). Converted into "
+                    "blocks automatically (lists and tables become real list / table blocks) -- this is "
                     "the safe path for internal/external/CTA links written as markdown in the source "
                     "article: it never requires manually retyping each line into blocks, which is what "
                     "previously let [anchor](url) syntax get silently flattened into plain 'anchor (url)' "
@@ -1748,8 +1757,9 @@ class UpdatePostParams(BaseModel):
     body_markdown: str | None = Field(
         default=None,
         description="ALTERNATIVE to blocks: replace the content with this full article Markdown "
-                    "(same shape as create_post's body_markdown -- headings, paragraphs, bullets, "
-                    "inline [anchor text](https://url) links), converted into blocks automatically. "
+                    "(same shape as create_post's body_markdown -- headings, paragraphs, bullet and "
+                    "numbered lists, pipe tables, **bold** / *italic* / `code`, inline "
+                    "[anchor text](https://url) links), converted into blocks automatically. "
                     "Ignored if blocks is also given.")
     excerpt: str | None = Field(default=None, description="New excerpt; omit to keep it")
     category: str | None = Field(default=None, description="New category name (posts only); resolved to an existing term, never created")
