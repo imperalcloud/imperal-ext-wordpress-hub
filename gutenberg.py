@@ -136,6 +136,12 @@ def list_block(items, ordered: bool = False, site_domain: str | None = None) -> 
     return f'<!-- wp:list{attrs} --><{tag} class="wp-block-list">{rendered}</{tag}><!-- /wp:list -->'
 
 
+def code_block(text: str) -> str:
+    """A block of code or preformatted text (a Markdown fence): kept line for line with its spacing, escaped,
+    and never read as Markdown -- a diagram drawn with characters stays a diagram."""
+    return f'<!-- wp:code --><pre class="wp-block-code"><code>{html.escape(text, quote=False)}</code></pre><!-- /wp:code -->'
+
+
 def table_block(rows, header: bool = True, site_domain: str | None = None) -> str:
     """A real Gutenberg table from rows of cell texts; the first row is the head when ``header``. Cell text goes
     through the same escaping and inline rendering as a paragraph -- no HTML is ever taken from the caller."""
@@ -248,6 +254,7 @@ def _block_extra(block, name: str, default):
     return default if value is None else value
 
 
+_FENCE_LINE_RE = re.compile(r"^(`{3,}|~{3,})[\w+-]*$")   # a code fence line, with an optional language
 _HEADING_LINE_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
 _BULLET_LINE_RE = re.compile(r"^[-*+]\s+(.*\S)\s*$")
 _ORDERED_LINE_RE = re.compile(r"^\d{1,3}[.)]\s+(.*\S)\s*$")
@@ -332,6 +339,9 @@ def markdown_to_blocks(markdown_text: str, *, skip_h1: bool = True) -> list[dict
     rows, header} (header is True when the second line is the '|---|' rule, which is then dropped). Inline
     emphasis ('**bold**', '*italic*', '`code`') stays in the text exactly as written and is rendered by
     blocks_to_content, the same way an inline link is.
+    The lines between two fence lines (three backticks or tildes) become ONE code block {type: "code", text}
+    with their spacing kept -- until 2026-11-26 each line of a fenced diagram became its own paragraph and the
+    fence itself a paragraph of backticks.
 
     Until 2026-11 a bullet became its own paragraph (this module had no list block) and a table line a paragraph
     of pipes: an article written with lists and a comparison table was published as headings and paragraphs only.
@@ -350,8 +360,21 @@ def markdown_to_blocks(markdown_text: str, *, skip_h1: bool = True) -> list[dict
             blocks.append({"type": "table", "text": "", "rows": rows, "header": header})
         run_kind, run = "", []
 
+    fence, fenced = "", []          # the fence that opened a code block, and its lines as written
     for raw_line in (markdown_text or "").splitlines():
         line = raw_line.strip()
+        if fence:
+            if line.startswith(fence) and not line.strip(fence[0]):
+                blocks.append({"type": "code", "text": "\n".join(fenced)})
+                fence, fenced = "", []
+            else:
+                fenced.append(raw_line.rstrip())
+            continue
+        opened = _FENCE_LINE_RE.match(line)
+        if opened:
+            close_run()
+            fence = opened.group(1)
+            continue
         if not line:
             close_run()
             continue
@@ -382,6 +405,8 @@ def markdown_to_blocks(markdown_text: str, *, skip_h1: bool = True) -> list[dict
                 continue
             close_run()
             blocks.append({"type": "paragraph", "text": line})
+    if fence and fenced:            # a fence never closed: its lines are still code, not paragraphs
+        blocks.append({"type": "code", "text": "\n".join(fenced)})
     close_run()
     return blocks
 
@@ -437,6 +462,9 @@ def blocks_to_content(blocks, site_domain: str | None = None) -> str:
                 rendered.append(rendered_table)
             continue
         if not text.strip():
+            continue
+        if btype == "code":
+            rendered.append(code_block(text))
             continue
         if btype == "heading":
             rendered.append(heading_block(text, level, site_domain))

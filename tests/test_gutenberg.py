@@ -467,3 +467,28 @@ def test_list_and_table_blocks_from_the_callers_own_models():
     assert out.count("<li>") == 2 and "<li>Two <strong>strong</strong></li>" in out
     assert "<th>H1</th>" in out and "<td>&lt;i&gt;b&lt;/i&gt;</td>" in out
     assert out.count("<ol ") == 1 and out.count("<table") == 1          # the empty ones render nothing
+
+
+def test_a_fenced_block_stays_one_code_block_line_for_line():
+    md = ("Review our guide.\n\n```\n   INCOMING <WEB> TRAFFIC\n        |\n   +---------+\n   | **WAF** |\n"
+          "   +---------+\n```\n\nModern infrastructure:\n\n- one\n")
+    blocks = gutenberg.markdown_to_blocks(md)
+    assert [b["type"] for b in blocks] == ["paragraph", "code", "paragraph", "list"]
+    assert blocks[1]["text"] == "   INCOMING <WEB> TRAFFIC\n        |\n   +---------+\n   | **WAF** |\n   +---------+"
+    out = gutenberg.blocks_to_content(blocks)
+    assert out.count("<!-- wp:code -->") == 1 and "```" not in out
+    assert "   INCOMING &lt;WEB&gt; TRAFFIC\n        |" in out          # spacing and line breaks kept, text escaped
+    assert "| **WAF** |" in out and "<strong>" not in out               # nothing inside a fence is read as Markdown
+
+
+def test_a_fence_with_a_language_a_tilde_fence_and_a_fence_never_closed():
+    assert gutenberg.markdown_to_blocks("```python\nx = 1\n```") == [{"type": "code", "text": "x = 1"}]
+    assert gutenberg.markdown_to_blocks("~~~\n- not a list\n| not | a table |\n~~~") == [
+        {"type": "code", "text": "- not a list\n| not | a table |"}]
+    assert gutenberg.markdown_to_blocks("text\n```\nleft open") == [
+        {"type": "paragraph", "text": "text"}, {"type": "code", "text": "left open"}]
+
+
+def test_a_code_block_from_the_callers_own_model():
+    out = gutenberg.blocks_to_content([PostBlockInput(type="code", text="a  b\n  c")])
+    assert out == '<!-- wp:code --><pre class="wp-block-code"><code>a  b\n  c</code></pre><!-- /wp:code -->'
