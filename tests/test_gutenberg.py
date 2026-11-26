@@ -289,12 +289,9 @@ def test_markdown_to_blocks_renders_headings_with_level():
     assert blocks[-1] == {"type": "heading", "text": "Sub section", "level": 3}
 
 
-def test_markdown_to_blocks_renders_bullets_as_paragraphs():
+def test_markdown_to_blocks_gathers_bullets_into_one_list_block():
     blocks = gutenberg.markdown_to_blocks("- First point\n- Second point")
-    assert blocks == [
-        {"type": "paragraph", "text": "First point"},
-        {"type": "paragraph", "text": "Second point"},
-    ]
+    assert blocks == [{"type": "list", "text": "", "items": ["First point", "Second point"], "ordered": False}]
 
 
 def test_markdown_to_blocks_preserves_inline_link_syntax_unchanged():
@@ -379,3 +376,94 @@ def test_strip_scaffolding_headings_handles_none_and_pydantic_blocks():
     assert len(out) == 1
     assert out[0].text == "Keep me"
 
+
+
+# ─────────── an article's Markdown reaches the page as it was written (2026-11) ───────────
+# Live 2026-11-26, post 2248 published from Article Writer's export: 40 raw "**" and not one <strong>, 0 <ul>,
+# 0 <li>, 0 <table> -- bold markers went out as text, every bullet was its own paragraph, a table a paragraph of
+# pipes. Nothing here loosens the escaping: the only tags that can appear are the ones this module writes.
+
+ARTICLE = """# Title
+
+Intro with **bold words**, *an aside* and `wp-config.php`.
+
+## DirectAdmin
+
+- **Primary Strength:** High stability and [LiteSpeed](https://example.com/ls) integration.
+- **Resource Footprint:** Minimal (<100MB idle RAM overhead).
+
+1. Back up the site
+2. Switch DNS
+
+| Panel | License |
+|---|---|
+| DirectAdmin | **Flat** |
+| cPanel | Per account |
+
+Closing line.
+"""
+
+
+def test_inline_bold_italic_and_code_render_as_html_and_nothing_else_does():
+    out = gutenberg.paragraph_block("A **bold** and *soft* word, `x < y` in code, <b>raw</b> & 2 * 3 * 4.")
+    assert "<strong>bold</strong>" in out and "<em>soft</em>" in out and "<code>x &lt; y</code>" in out
+    assert "&lt;b&gt;raw&lt;/b&gt;" in out and "&amp;" in out      # caller HTML is still escaped text
+    assert "2 * 3 * 4" in out                                        # arithmetic is not emphasis
+    assert "**" not in out
+
+
+def test_bold_around_a_link_and_inside_an_anchor():
+    out = gutenberg.paragraph_block("See **[the guide](https://climtec.md/g/)** and [**this**](https://climtec.md/t/).",
+                                    site_domain="climtec.md")
+    assert '<strong><a href="https://climtec.md/g/">the guide</a></strong>' in out
+    assert '<a href="https://climtec.md/t/"><strong>this</strong></a>' in out
+    assert "**" not in out and "\x00" not in out
+
+
+def test_text_inside_a_code_span_is_left_as_written():
+    out = gutenberg.paragraph_block("Run `rm **/*.log` now")
+    assert "<code>rm **/*.log</code>" in out and "<strong>" not in out
+
+
+def test_an_articles_markdown_becomes_lists_a_table_and_emphasis():
+    blocks = gutenberg.markdown_to_blocks(ARTICLE)
+    assert [b["type"] for b in blocks] == ["paragraph", "heading", "list", "list", "table", "paragraph"]
+    assert blocks[2]["ordered"] is False and len(blocks[2]["items"]) == 2
+    assert blocks[3] == {"type": "list", "text": "", "items": ["Back up the site", "Switch DNS"], "ordered": True}
+    assert blocks[4]["header"] is True
+    assert blocks[4]["rows"] == [["Panel", "License"], ["DirectAdmin", "**Flat**"], ["cPanel", "Per account"]]
+
+    html_out = gutenberg.blocks_to_content(blocks, site_domain="blog.example.org")
+    assert html_out.count("<!-- wp:list -->") == 1 and html_out.count('<!-- wp:list {"ordered":true} -->') == 1
+    assert html_out.count("<!-- wp:list-item -->") == 4 and html_out.count("</li>") == 4
+    assert '<ul class="wp-block-list">' in html_out and '<ol class="wp-block-list">' in html_out
+    assert "<li><strong>Primary Strength:</strong> High stability and <a href=" in html_out
+    assert "Minimal (&lt;100MB idle RAM overhead)." in html_out
+    assert '<figure class="wp-block-table"><table class="has-fixed-layout"><thead><tr><th>Panel</th>' in html_out
+    assert "<td><strong>Flat</strong></td>" in html_out and html_out.count("<tr>") == 3
+    assert "**" not in html_out and "|" not in html_out
+    assert "<strong>bold words</strong>" in html_out and "<em>an aside</em>" in html_out
+
+
+def test_a_list_ends_where_the_lines_stop_being_its_kind():
+    blocks = gutenberg.markdown_to_blocks("- a\n- b\n1. c\nPlain\n- d")
+    assert [(b["type"], b.get("items")) for b in blocks] == [
+        ("list", ["a", "b"]), ("list", ["c"]), ("paragraph", None), ("list", ["d"])]
+    assert blocks[1]["ordered"] is True
+
+
+def test_a_table_without_a_rule_line_has_no_head_and_ragged_rows_are_squared():
+    blocks = gutenberg.markdown_to_blocks("| a | b |\n| c |")
+    assert blocks == [{"type": "table", "text": "", "rows": [["a", "b"], ["c"]], "header": False}]
+    out = gutenberg.blocks_to_content(blocks)
+    assert "<thead>" not in out and out.count("<td>") == 4
+
+
+def test_list_and_table_blocks_from_the_callers_own_models():
+    blocks = [PostBlockInput(type="list", items=["One", "Two **strong**"], ordered=True),
+              PostBlockInput(type="table", rows=[["H1", "H2"], ["a", "<i>b</i>"]]),
+              PostBlockInput(type="list", items=[]), PostBlockInput(type="table", rows=[])]
+    out = gutenberg.blocks_to_content(blocks)
+    assert out.count("<li>") == 2 and "<li>Two <strong>strong</strong></li>" in out
+    assert "<th>H1</th>" in out and "<td>&lt;i&gt;b&lt;/i&gt;</td>" in out
+    assert out.count("<ol ") == 1 and out.count("<table") == 1          # the empty ones render nothing
