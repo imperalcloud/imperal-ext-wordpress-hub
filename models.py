@@ -1658,11 +1658,12 @@ class PostBlockInput(BaseModel):
     plugin is installed, since it is standard schema.org markup rather than
     a plugin-proprietary block; type == "list" renders a Gutenberg list from
     items (ordered -> numbered); type == "table" renders a Gutenberg table
-    from rows (the first row is the head when header); anything else renders
+    from rows (the first row is the head when header); type == "code" renders
+    text as a preformatted code block, line for line; anything else renders
     a paragraph. Block text is never HTML: it is escaped, and only inline
     Markdown (**bold**, *italic*, `code`, [anchor](url)) is rendered.
     """
-    type: str = Field(default="paragraph", description="'paragraph', 'heading', 'list', 'table', 'image', or 'faq'")
+    type: str = Field(default="paragraph", description="'paragraph', 'heading', 'list', 'table', 'code', 'image', or 'faq'")
     text: str = Field(default="", description="Block text (paragraph/heading); alt text for 'image'; optional intro text for 'faq'. Inline Markdown is rendered: **bold**, *italic*, `code`, [anchor text](https://url); any HTML written here is escaped and shown as text")
     items: list[str] = Field(default_factory=list, description="List items, used only when type is 'list' -- each one line of text (inline Markdown rendered as in text)")
     ordered: bool = Field(default=False, description="Numbered list instead of bullets, used only when type is 'list'")
