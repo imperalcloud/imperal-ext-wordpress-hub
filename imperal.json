@@ -47516,6 +47516,101 @@
       "long_running": false,
       "scopes": [],
       "owner_chat_tool": "wordpress-hub"
+    },
+    {
+      "name": "run_wp_command",
+      "description": "Execute an arbitrary WP-CLI command over SSH on a connected WordPress site. Allows running any wp subcommand (e.g. 'plugin list --status=active', 'post list --post_type=page', 'option get siteurl', 'transient delete --all', 'user list --role=administrator'). Requires SSH configured via add_ssh.",
+      "action_type": "write",
+      "chain_callable": true,
+      "effects": [
+        "wp.cli_command"
+      ],
+      "id_projection": "",
+      "params_schema": {
+        "properties": {
+          "site_id": {
+            "description": "Site id from a previous list_sites call — never invent it",
+            "title": "Site Id",
+            "type": "string"
+          },
+          "command": {
+            "description": "WP-CLI command string or subcommand, e.g. 'plugin list --status=active' or 'post list'",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Command",
+            "type": "string"
+          },
+          "raw_args": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Optional raw arguments/flags passed directly to the command",
+            "title": "Raw Args"
+          },
+          "timeout": {
+            "default": 60,
+            "description": "Command execution timeout in seconds (default 60, up to 600)",
+            "maximum": 600,
+            "minimum": 5,
+            "title": "Timeout",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "site_id",
+          "command"
+        ],
+        "title": "RunWpCommandParams",
+        "type": "object"
+      },
+      "return_schema": {
+        "description": "Result of executing an arbitrary WP-CLI command over SSH.",
+        "properties": {
+          "id": {
+            "default": "",
+            "title": "Id",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "kind": {
+            "default": "",
+            "title": "Kind",
+            "type": "string"
+          },
+          "output": {
+            "default": "",
+            "title": "Output",
+            "type": "string"
+          },
+          "command": {
+            "default": "",
+            "title": "Command",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "title": "WpCommandResult",
+        "type": "object",
+        "x-sdl": "entity"
+      },
+      "event": "wordpress-hub.run_wp_command",
+      "background": false,
+      "long_running": false,
+      "scopes": [],
+      "owner_chat_tool": "wordpress-hub"
     }
   ],
   "signals": [],
@@ -47628,7 +47723,6 @@
       "call_builder_ability_risky": 16,
       "cancel_scheduled_action": 16,
       "check_backup_restorability": 40,
-      "audit_bricks_forms": 8,
       "check_builder_support": 8,
       "check_database_repair": 40,
       "check_debug_mode": 8,
@@ -47807,7 +47901,7 @@
       "reply_to_product_review": 16,
       "resend_order_email": 16,
       "reset_indexnow_key": 16,
-      "reset_user_password": 20,
+      "reset_user_password": 16,
       "restore_revision": 16,
       "retry_csv_import_failures": 40,
       "retry_failed_action": 16,
@@ -47858,7 +47952,8 @@
       "update_webhook": 16,
       "upload_media": 20,
       "verify_core_checksums": 40,
-      "verify_plugin_checksums": 40
+      "verify_plugin_checksums": 40,
+      "run_wp_command": 20
     },
     "free_tools": [
       "add_ssh",
