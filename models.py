@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-import imperal_sdk as sdl
+from imperal_sdk import sdl
 
 
 class SiteRecord(sdl.Entity):
